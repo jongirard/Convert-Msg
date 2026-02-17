@@ -201,7 +201,10 @@ def convert_msg_files(input_dir: Path, output_dir: Path, **kwargs) -> None:
     Convert all .msg files in input_dir, saving each into a subfolder
     of output_dir named after the original file (without .msg extension).
     """
-    msg_files = sorted(input_dir.glob("*.msg"))
+    msg_files = sorted(
+        p for p in input_dir.iterdir()
+        if p.is_file() and p.suffix.lower() == ".msg"
+    )
 
     if not msg_files:
         print(f"No .msg files found in: {input_dir}")

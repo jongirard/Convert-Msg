@@ -14,12 +14,15 @@ Usage:
 """
 
 import argparse
+import logging
 import shutil
 import sys
 import tempfile
 from pathlib import Path
 
 import extract_msg
+
+logger = logging.getLogger(__name__)
 
 
 def build_save_kwargs(**kwargs) -> dict:
@@ -65,21 +68,75 @@ def build_save_kwargs(**kwargs) -> dict:
     return save_kwargs
 
 
-def convert_single_msg(msg_path: Path, output_dir: Path, save_kwargs: dict) -> None:
+def _save_with_fallback(msg_path: Path, save_kwargs: dict, tmp: str) -> str:
+    """
+    Attempt to save a .msg file, falling back to simpler formats on failure.
+
+    Some .msg files trigger internal errors in extract-msg during HTML
+    processing (e.g. malformed HTML that causes AttributeError in
+    BeautifulSoup tag iteration).  When this happens, retry with
+    progressively simpler output formats: RTF, then plain text.
+
+    Returns a description of the format actually used, or raises if all
+    attempts fail.
+    """
+    # Build the list of attempts: original kwargs first, then fallbacks.
+    attempts = [("original settings", save_kwargs)]
+
+    uses_html = save_kwargs.get("html") or save_kwargs.get("pdf")
+    if uses_html:
+        # Fallback 1: try RTF instead of HTML/PDF.
+        rtf_kwargs = {
+            k: v for k, v in save_kwargs.items()
+            if k not in ("html", "pdf", "rtf")
+        }
+        rtf_kwargs["rtf"] = True
+        attempts.append(("RTF fallback", rtf_kwargs))
+
+        # Fallback 2: plain text (strip all rich-format flags).
+        plain_kwargs = {
+            k: v for k, v in save_kwargs.items()
+            if k not in ("html", "pdf", "rtf", "raw")
+        }
+        attempts.append(("plain-text fallback", plain_kwargs))
+
+    last_err = None
+    for label, kwargs in attempts:
+        try:
+            msg = extract_msg.openMsg(str(msg_path))
+            try:
+                msg.save(customPath=tmp, **kwargs)
+            finally:
+                msg.close()
+            return label
+        except Exception as exc:
+            last_err = exc
+            logger.debug("save failed with %s: %s", label, exc)
+            # Clean up any partial output so the next attempt starts fresh.
+            for child in Path(tmp).iterdir():
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+
+    raise last_err  # type: ignore[misc]
+
+
+def convert_single_msg(msg_path: Path, output_dir: Path, save_kwargs: dict) -> str:
     """
     Convert a single .msg file. The output folder is placed inside output_dir,
     named after the .msg file's stem (filename without extension).
+
+    Returns a short note about which format was used (empty string when the
+    original settings worked).
 
     Raises on failure (caller is responsible for catching).
     """
     folder_name = msg_path.stem
     dest = output_dir / folder_name
 
-    msg = extract_msg.openMsg(str(msg_path))
-
     with tempfile.TemporaryDirectory() as tmp:
-        msg.save(customPath=tmp, **save_kwargs)
-        msg.close()
+        used = _save_with_fallback(msg_path, save_kwargs, tmp)
 
         # extract-msg creates exactly one subfolder inside tmp
         subfolders = [p for p in Path(tmp).iterdir() if p.is_dir()]
@@ -93,6 +150,8 @@ def convert_single_msg(msg_path: Path, output_dir: Path, save_kwargs: dict) -> N
         if dest.exists():
             shutil.rmtree(dest)
         shutil.copytree(str(src), str(dest))
+
+    return used
 
 
 def add_conversion_args(parser: argparse.ArgumentParser) -> None:
@@ -220,8 +279,11 @@ def convert_msg_files(input_dir: Path, output_dir: Path, **kwargs) -> None:
         print(f"  -> {output_dir / msg_path.stem}")
 
         try:
-            convert_single_msg(msg_path, output_dir, save_kwargs)
-            print("  Done\n")
+            used = convert_single_msg(msg_path, output_dir, save_kwargs)
+            if used != "original settings":
+                print(f"  Done (used {used})\n")
+            else:
+                print("  Done\n")
         except Exception as e:
             print(f"  Error: {e}\n")
             errors.append((msg_path.name, str(e)))

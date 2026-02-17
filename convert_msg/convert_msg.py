@@ -22,19 +22,11 @@ from pathlib import Path
 import extract_msg
 
 
-def convert_msg_files(input_dir: Path, output_dir: Path, **kwargs) -> None:
+def build_save_kwargs(**kwargs) -> dict:
     """
-    Convert all .msg files in input_dir, saving each into a subfolder
-    of output_dir named after the original file (without .msg extension).
+    Build the save_kwargs dictionary for extract_msg from user-provided options.
+    Defaults: html=True, allowFallback=True, skipBodyNotFound=True.
     """
-    msg_files = sorted(input_dir.glob("*.msg"))
-
-    if not msg_files:
-        print(f"No .msg files found in: {input_dir}")
-        sys.exit(1)
-
-    print(f"Found {len(msg_files)} .msg file(s) in: {input_dir}\n")
-
     save_kwargs = {
         "html": True,
         "allowFallback": True,
@@ -70,74 +62,41 @@ def convert_msg_files(input_dir: Path, output_dir: Path, **kwargs) -> None:
         save_kwargs["json"] = True
     if kwargs.get("skip_not_implemented"):
         save_kwargs["skipNotImplemented"] = True
-
-    errors = []
-
-    for msg_path in msg_files:
-        # Folder name = original filename without .msg extension
-        folder_name = msg_path.stem
-        dest = output_dir / folder_name
-
-        print(f"Processing: {msg_path.name}")
-        print(f"  -> {dest}")
-
-        try:
-            msg = extract_msg.openMsg(str(msg_path))
-
-            # extract-msg always creates a subfolder based on the email
-            # subject, which may be truncated. To get the exact original
-            # filename as the folder name, we:
-            #   1. Save into a temp directory
-            #   2. Find the subfolder extract-msg created
-            #   3. Rename it to match the original filename
-
-            with tempfile.TemporaryDirectory() as tmp:
-                msg.save(customPath=tmp, **save_kwargs)
-                msg.close()
-
-                # extract-msg creates exactly one subfolder inside tmp
-                subfolders = [p for p in Path(tmp).iterdir() if p.is_dir()]
-                if subfolders:
-                    src = subfolders[0]
-                else:
-                    # Fallback: treat tmp itself as the source
-                    src = Path(tmp)
-
-                # Move to final destination with the correct name
-                if dest.exists():
-                    shutil.rmtree(dest)
-                shutil.copytree(str(src), str(dest))
-
-            print("  ✓ Done\n")
-        except Exception as e:
-            print(f"  ✗ Error: {e}\n")
-            errors.append((msg_path.name, str(e)))
-
-    # Summary
-    succeeded = len(msg_files) - len(errors)
-    print("=" * 60)
-    print(f"Complete: {succeeded}/{len(msg_files)} converted successfully.")
-    if errors:
-        print("\nFailed files:")
-        for name, err in errors:
-            print(f"  - {name}: {err}")
+    return save_kwargs
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Batch convert .msg files into named folders using extract-msg."
-    )
-    parser.add_argument(
-        "input_dir",
-        type=Path,
-        help="Directory containing .msg files to convert.",
-    )
-    parser.add_argument(
-        "--out",
-        type=Path,
-        default=None,
-        help="Output directory. Defaults to the input directory.",
-    )
+def convert_single_msg(msg_path: Path, output_dir: Path, save_kwargs: dict) -> None:
+    """
+    Convert a single .msg file. The output folder is placed inside output_dir,
+    named after the .msg file's stem (filename without extension).
+
+    Raises on failure (caller is responsible for catching).
+    """
+    folder_name = msg_path.stem
+    dest = output_dir / folder_name
+
+    msg = extract_msg.openMsg(str(msg_path))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        msg.save(customPath=tmp, **save_kwargs)
+        msg.close()
+
+        # extract-msg creates exactly one subfolder inside tmp
+        subfolders = [p for p in Path(tmp).iterdir() if p.is_dir()]
+        if subfolders:
+            src = subfolders[0]
+        else:
+            # Fallback: treat tmp itself as the source
+            src = Path(tmp)
+
+        # Move to final destination with the correct name
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(str(src), str(dest))
+
+
+def add_conversion_args(parser: argparse.ArgumentParser) -> None:
+    """Add all .msg conversion option flags to an argument parser."""
     parser.add_argument(
         "--html",
         action="store_true",
@@ -215,6 +174,82 @@ def main():
         help="Character set for HTML output (default: utf-8).",
     )
 
+
+def kwargs_from_args(args: argparse.Namespace) -> dict:
+    """Convert parsed argparse Namespace to kwargs dict for build_save_kwargs."""
+    return {
+        "html": args.html,
+        "rtf": args.rtf,
+        "raw": args.raw,
+        "pdf": args.pdf,
+        "json": args.json,
+        "allow_fallback": args.allow_fallback,
+        "save_header": args.save_header,
+        "attachments_only": args.attachments_only,
+        "skip_hidden": args.skip_hidden,
+        "skip_embedded": args.skip_embedded,
+        "extract_embedded": args.extract_embedded,
+        "skip_body_not_found": args.skip_body_not_found,
+        "skip_not_implemented": args.skip_not_implemented,
+        "use_content_id": args.use_content_id,
+        "charset": args.charset,
+    }
+
+
+def convert_msg_files(input_dir: Path, output_dir: Path, **kwargs) -> None:
+    """
+    Convert all .msg files in input_dir, saving each into a subfolder
+    of output_dir named after the original file (without .msg extension).
+    """
+    msg_files = sorted(input_dir.glob("*.msg"))
+
+    if not msg_files:
+        print(f"No .msg files found in: {input_dir}")
+        sys.exit(1)
+
+    print(f"Found {len(msg_files)} .msg file(s) in: {input_dir}\n")
+
+    save_kwargs = build_save_kwargs(**kwargs)
+    errors = []
+
+    for msg_path in msg_files:
+        print(f"Processing: {msg_path.name}")
+        print(f"  -> {output_dir / msg_path.stem}")
+
+        try:
+            convert_single_msg(msg_path, output_dir, save_kwargs)
+            print("  Done\n")
+        except Exception as e:
+            print(f"  Error: {e}\n")
+            errors.append((msg_path.name, str(e)))
+
+    # Summary
+    succeeded = len(msg_files) - len(errors)
+    print("=" * 60)
+    print(f"Complete: {succeeded}/{len(msg_files)} converted successfully.")
+    if errors:
+        print("\nFailed files:")
+        for name, err in errors:
+            print(f"  - {name}: {err}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Batch convert .msg files into named folders using extract-msg."
+    )
+    parser.add_argument(
+        "input_dir",
+        type=Path,
+        help="Directory containing .msg files to convert.",
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="Output directory. Defaults to the input directory.",
+    )
+    add_conversion_args(parser)
+
     args = parser.parse_args()
 
     input_dir = args.input_dir.resolve()
@@ -228,21 +263,7 @@ def main():
     convert_msg_files(
         input_dir=input_dir,
         output_dir=output_dir,
-        html=args.html,
-        rtf=args.rtf,
-        raw=args.raw,
-        pdf=args.pdf,
-        json=args.json,
-        allow_fallback=args.allow_fallback,
-        save_header=args.save_header,
-        attachments_only=args.attachments_only,
-        skip_hidden=args.skip_hidden,
-        skip_embedded=args.skip_embedded,
-        extract_embedded=args.extract_embedded,
-        skip_body_not_found=args.skip_body_not_found,
-        skip_not_implemented=args.skip_not_implemented,
-        use_content_id=args.use_content_id,
-        charset=args.charset,
+        **kwargs_from_args(args),
     )
 
 

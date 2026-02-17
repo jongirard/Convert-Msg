@@ -1,14 +1,20 @@
 [tool.poetry]
 name = "convert-msg"
-version = "0.1.0"
-description = ""
+version = "0.2.0"
+description = "Batch convert Outlook .msg files, with Google Drive integration"
 authors = ["Jon Girard <jongirard03@gmail.com>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.12"
 extract-msg = "^0.55.0"
+google-api-python-client = "^2.100.0"
+google-auth-httplib2 = "^0.2.0"
+google-auth-oauthlib = "^1.2.0"
 
+[tool.poetry.scripts]
+convert-msg = "convert_msg.convert_msg:main"
+gdrive-convert-msg = "convert_msg.gdrive_convert:main"
 
 [build-system]
 requires = ["poetry-core"]
